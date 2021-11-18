@@ -20,19 +20,24 @@ export class ObjectPool {
     }
     private tmpKeyNewObjects = `${this.pool}:new` as const
 
-    async queue(...objects: string[]) {
+    async queue(...objects: string[]): Promise<string[]> {
+        if (objects.length === 0) {
+            return []
+        }
         return await this.redis.eval(
             `
-                require 'redis'
-                
-                local tmpKeyNewObjects = KEYS[0]
-                local keyAllObjects = KEYS[1]
-                redis.call('SADD', tmpKeyNewObjects, unpack(ARGS))
+                local tmpKeyNewObjects = KEYS[1]
+                local keyAllObjects = KEYS[2]
+                redis.call('SADD', tmpKeyNewObjects, unpack(ARGV))
                 local newObjects = redis.call('SDIFF', tmpKeyNewObjects, keyAllObjects)
-                redis.call('REM', tmpKeyNewObjects)
+                redis.call('DEL', tmpKeyNewObjects)
 
-                local keyObjectQueue = KEYS[2]
-                local keyQueuedObjects = KEYS[3]
+                if newObjects[1] == nil then
+                    return {}
+                end
+
+                local keyObjectQueue = KEYS[3]
+                local keyQueuedObjects = KEYS[4]
                 redis.call('SADD', keyAllObjects, unpack(newObjects))
                 redis.call('SADD', keyQueuedObjects, unpack(newObjects))
                 redis.call('RPUSH', keyObjectQueue, unpack(newObjects))
@@ -51,34 +56,36 @@ export class ObjectPool {
         )
     }
 
-    async claim(maxCount: number) {
+    async claim(maxCount: number): Promise<{session: string, objects: string[]}> {
         const session = uuidV4()
-        return await this.redis.eval(
+        if (maxCount === 0) {
+            return {
+                session,
+                objects: [],
+            }
+        }
+        const objects = await this.redis.eval(
             `
-                require 'redis'
-                
-                local keyObjectQueue = KEYS[0]
-                local maxCount = ARGS[0]
+                local keyObjectQueue = KEYS[1]
+                local maxCount = ARGV[1]
                 local objects = redis.call('LPOP', keyObjectQueue, maxCount)
-                if objects = nil then
+                if objects == nil then
                     return nil
                 end
-                local count = table.getN(objects)
 
-                local keyQueuedObjects = KEYS[1]
+                local keyQueuedObjects = KEYS[2]
                 redis.call('SREM', keyQueuedObjects, unpack(objects))
                 
-                local partialKeyObjectSession = ARGS[1]
-                local session = ARGS[2]
-                local expirationSeconds = ARGS[3]
+                local partialKeyObjectSession = ARGV[2]
+                local session = ARGV[3]
+                local expirationSeconds = ARGV[4]
 
-                for i=0,(count - 1) do
-                    local object = objects[i]
+                for object in objects do
                     local keyObjectSession = partialKeyObjectSession..object
                     redis.call('SETEX', keyObjectSession, expirationSeconds, session)
                 end
 
-                local keyClaimedObjects = KEY[3]
+                local keyClaimedObjects = KEYS[3]
                 redis.call('RPUSH', keyClaimedObjects, objects)
 
                 return objects
@@ -95,24 +102,26 @@ export class ObjectPool {
             session,
             EXPIRATION_SECONDS,
         )
+        return {
+            session,
+            objects,
+        }
     }
 
     async extend(object: string, session: string): Promise<boolean> {
         const result = await this.redis.eval(
             `
-                require 'redis'
-                
-                local keyObjectSession = KEYS[0]
-                local session = ARGS[0]
+                local keyObjectSession = KEYS[1]
+                local session = ARGV[1]
                 local currentSession = redis.call('GET', keyObjectSession)
                 if currentSession ~= session then
                     return 0
                 end
 
-                local expirationSeconds = ARGS[1]
+                local expirationSeconds = ARGV[2]
                 redis.call('SETEX', keyObjectSession, expirationSeconds, session)
 
-                local keyClaimedObjects = KEYS[1]
+                local keyClaimedObjects = KEYS[2]
                 redis.call('LREM', keyClaimedObjects, 1, object)
                 redis.call('RPUSH', keyClaimedObjects, object)
 
@@ -134,22 +143,20 @@ export class ObjectPool {
     async release(object: string, session: string): Promise<boolean> {
         const result = await this.redis.eval(
             `
-                require 'redis'
-                
-                local keyObjectSession = KEYS[0]
-                local session = ARGS[0]
+                local keyObjectSession = KEYS[1]
+                local session = ARGV[1]
                 local currentSession = redis.call('GET', keyObjectSession)
                 if currentSession ~= session then
                     return 0
                 end
 
-                redis.call('REM', keyObjectSession)
+                redis.call('DEL', keyObjectSession)
 
-                local keyAllObjects = KEYS[1]
-                local object = ARGS[1]
+                local keyAllObjects = KEYS[2]
+                local object = ARGV[2]
                 redis.call('SREM', keyAllObjects, object)
 
-                local keyClaimedObjects = KEYS[2]
+                local keyClaimedObjects = KEYS[3]
                 redis.call('LREM', keyClaimedObjects, 1, object)
 
                 return 1
@@ -171,24 +178,22 @@ export class ObjectPool {
     async requeue(object: string, session: string): Promise<boolean> {
         const result = await this.redis.eval(
             `
-                require 'redis'
-                
-                local keyObjectSession = KEYS[0]
-                local session = ARGS[0]
+                local keyObjectSession = KEYS[1]
+                local session = ARGV[1]
                 local currentSession = redis.call('GET', keyObjectSession)
                 if currentSession ~= session then
                     return 0
                 end
 
-                redis.call('REM', keyObjectSession)
+                redis.call('DEL', keyObjectSession)
                 
-                local keyQueuedObjects = KEYS[1]
-                local keyObjectQueue = KEYS[2]
-                local object = ARGS[1]
+                local keyQueuedObjects = KEYS[2]
+                local keyObjectQueue = KEYS[3]
+                local object = ARGV[2]
                 redis.call('SADD', keyQueuedObjects, object)
                 redis.call('RPUSH', keyObjectQueue, object)
 
-                local keyClaimedObjects = KEYS[2]
+                local keyClaimedObjects = KEYS[4]
                 redis.call('LREM', keyClaimedObjects, 1, object)
 
                 return 1
@@ -211,12 +216,10 @@ export class ObjectPool {
     async clean(): Promise<void> {
         return await this.redis.eval(
             `
-                require 'redis'
-
-                local keyClaimedObjects = KEYS[0]
+                local keyClaimedObjects = KEYS[1]
                 local claimedObjectCount = redis.call('LLEN', keyClaimedObjects)
 
-                local partialKeyObjectSession = ARGS[0]
+                local partialKeyObjectSession = ARGV[1]
 
                 local total = 0
 
@@ -224,7 +227,7 @@ export class ObjectPool {
                     local object = redis.call('LINDEX', keyClaimedObjects, i)
                     local keyObjectSession = partialKeyObjectSession..object
                     
-                    if keyObjectSession = nil then
+                    if keyObjectSession == nil then
                         break
                     end
                     total = total + 1
@@ -232,15 +235,15 @@ export class ObjectPool {
                 
                 local requeuedObjects = redis.call('LPOP', keyClaimedObjects, total)
 
-                local keyObjectQueue = KEYS[1]
-                local keyQueuedObjects = KEYS[2]
+                local keyObjectQueue = KEYS[2]
+                local keyQueuedObjects = KEYS[3]
                 redis.call('SADD', keyQueuedObjects, unpack(requeuedObjects))
                 redis.call('RPUSH', keyObjectQueue, unpack(requeuedObjects))
 
                 return requeuedObjects
             `,
 
-            1,
+            3,
 
             this.keyClaimedObjects,
             this.keyQueuedObjects,
