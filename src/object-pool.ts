@@ -1,8 +1,6 @@
 import type { RedisClient } from "./redis";
 import { v4 as uuidV4 } from "uuid"
 
-const EXPIRATION_SECONDS = 60
-
 export class ObjectPool {
     constructor(
         readonly redis: RedisClient,
@@ -56,7 +54,7 @@ export class ObjectPool {
         )
     }
 
-    async claim(maxCount: number): Promise<{session: string, objects: string[]}> {
+    async claim(maxCount: number, expirationSeconds: number): Promise<{session: string, objects: string[]}> {
         const session = uuidV4()
         if (maxCount === 0) {
             return {
@@ -69,8 +67,8 @@ export class ObjectPool {
                 local keyObjectQueue = KEYS[1]
                 local maxCount = ARGV[1]
                 local objects = redis.call('LPOP', keyObjectQueue, maxCount)
-                if objects == nil then
-                    return nil
+                if objects == false then
+                    return {}
                 end
 
                 local keyQueuedObjects = KEYS[2]
@@ -80,13 +78,13 @@ export class ObjectPool {
                 local session = ARGV[3]
                 local expirationSeconds = ARGV[4]
 
-                for object in objects do
+                for i,object in ipairs(objects) do
                     local keyObjectSession = partialKeyObjectSession..object
                     redis.call('SETEX', keyObjectSession, expirationSeconds, session)
                 end
 
                 local keyClaimedObjects = KEYS[3]
-                redis.call('RPUSH', keyClaimedObjects, objects)
+                redis.call('RPUSH', keyClaimedObjects, unpack(objects))
 
                 return objects
             `,
@@ -100,7 +98,7 @@ export class ObjectPool {
             maxCount,
             this.partialKeyObjectSession,
             session,
-            EXPIRATION_SECONDS,
+            expirationSeconds,
         )
         return {
             session,
@@ -108,7 +106,7 @@ export class ObjectPool {
         }
     }
 
-    async extend(object: string, session: string): Promise<boolean> {
+    async extend(object: string, session: string, expirationSeconds: number): Promise<boolean> {
         const result = await this.redis.eval(
             `
                 local keyObjectSession = KEYS[1]
@@ -134,7 +132,7 @@ export class ObjectPool {
             this.keyClaimedObjects,
 
             session,
-            EXPIRATION_SECONDS,
+            expirationSeconds,
         )
 
         return result === 1
