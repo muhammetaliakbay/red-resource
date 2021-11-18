@@ -14,7 +14,7 @@ export class ObjectPool {
     readonly keyClaimedObjects = `${this.pool}:claimed` as const
     private partialKeyObjectSession = `${this.pool}:session:` as const
     keyObjectSession(object: string): `${string}:session:${typeof object}` {
-        return `${this.partialKeyObjectSession}:${object}` as const
+        return `${this.partialKeyObjectSession}${object}` as const
     }
     private tmpKeyNewObjects = `${this.pool}:new` as const
 
@@ -233,8 +233,8 @@ export class ObjectPool {
                 
                 local requeuedObjects = redis.call('LPOP', keyClaimedObjects, total)
 
-                local keyObjectQueue = KEYS[2]
-                local keyQueuedObjects = KEYS[3]
+                local keyQueuedObjects = KEYS[2]
+                local keyObjectQueue = KEYS[3]
                 redis.call('SADD', keyQueuedObjects, unpack(requeuedObjects))
                 redis.call('RPUSH', keyObjectQueue, unpack(requeuedObjects))
 

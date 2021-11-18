@@ -34,10 +34,14 @@ describe('ObjectPool', () => {
         all,
         queue,
         claims,
+        objectSessions = {},
     }: {
         all: string[] | Set<string>,
         queue: string[] | Set<string>,
         claims: string[] | Set<string>,
+        objectSessions?: {
+            [object: string]: string | null,
+        },
     }) {
         const allObjects = await redis.smembers(objectPool.keyAllObjects)
         const queuedObjects = await redis.smembers(objectPool.keyQueuedObjects)
@@ -64,6 +68,20 @@ describe('ObjectPool', () => {
         } else {
             expect(claimedObjects).to.deep.equal(claims)
         }
+
+        for(const [object, session] of Object.entries(objectSessions)) {
+            const objectSession = await redis.get(
+                objectPool.keyObjectSession(object)
+            )
+            expect(objectSession).to.equal(session)
+        }
+    }
+
+    async function forceExpire(object: string, session: string) {
+        const expiredSession = await redis.getdel(
+            objectPool.keyObjectSession(object)
+        )
+        expect(expiredSession).to.equal(session)
     }
     
     describe('queue method', () => {
@@ -78,6 +96,9 @@ describe('ObjectPool', () => {
                 all: [object],
                 queue: [object],
                 claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
             })
         })
 
@@ -96,6 +117,9 @@ describe('ObjectPool', () => {
                 all: objects,
                 queue: objects,
                 claims: [],
+                objectSessions: Object.fromEntries(
+                    [...objects].map(object => [object, null])
+                ),
             })
         })
 
@@ -119,6 +143,9 @@ describe('ObjectPool', () => {
                 all: objects,
                 queue: objects,
                 claims: [],
+                objectSessions: Object.fromEntries(
+                    [...objects].map(object => [object, null])
+                ),
             })
         })
     
@@ -147,6 +174,150 @@ describe('ObjectPool', () => {
                 all: [object],
                 queue: [object],
                 claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+    })
+
+    describe('claim method', () => {
+        it('should claim the object', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+    
+            const {
+                session,
+                objects: claimedObjects,
+            } = await objectPool.claim(1, 60)
+    
+            expect(typeof session).to.equal('string')
+            expect(claimedObjects).to.deep.equal([object])
+
+            await checkRedis({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: session,
+                },
+            })
+        })
+
+        it('should not claim anything from empty queue', async () => {
+            const {
+                session,
+                objects: claimedObjects,
+            } = await objectPool.claim(1, 60)
+    
+            expect(typeof session).to.equal('string')
+            expect(claimedObjects).to.deep.equal([])
+
+            await checkRedis({
+                all: [],
+                queue: [],
+                claims: [],
+            })
+        })
+
+        it('should not claim already claimed object', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session: sessionA,
+                objects: claimedObjectsA,
+            } = await objectPool.claim(1, 60)
+
+            expect(claimedObjectsA).to.deep.equal([object])
+
+            const {
+                objects: claimedObjectsB,
+            } = await objectPool.claim(1, 60)
+    
+            expect(claimedObjectsB).to.deep.equal([])
+
+            await checkRedis({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: sessionA,
+                },
+            })
+        })
+
+        it('should not claim expired object', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session: sessionA,
+                objects: claimedObjectsA,
+            } = await objectPool.claim(1, 60)
+
+            expect(claimedObjectsA).to.deep.equal([object])
+
+            await forceExpire(object, sessionA)
+
+            const {
+                objects: claimedObjectsB,
+            } = await objectPool.claim(1, 60)
+    
+            expect(claimedObjectsB).to.deep.equal([])
+
+            await checkRedis({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should claim cleaned object', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session: sessionA,
+                objects: claimedObjectsA,
+            } = await objectPool.claim(1, 60)
+
+            expect(claimedObjectsA).to.deep.equal([object])
+
+            await forceExpire(object, sessionA)
+
+            await objectPool.clean()
+
+            await checkRedis({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+
+            const {
+                session: sessionB,
+                objects: claimedObjectsB,
+            } = await objectPool.claim(1, 60)
+    
+            expect(claimedObjectsB).to.deep.equal([object])
+
+            await checkRedis({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: sessionB,
+                },
             })
         })
     })
