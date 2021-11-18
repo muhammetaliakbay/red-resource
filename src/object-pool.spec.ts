@@ -14,8 +14,8 @@ describe('ObjectPool', () => {
     beforeEach(
         () => {
             redis = new Redis({
-                host: 'localhost',
-                port: 6379,
+                host: REDIS_HOST,
+                port: REDIS_PORT,
             })
             pool = uuidV4()
             objectPool = new ObjectPool(
