@@ -1,5 +1,8 @@
 name: Test
-on: push
+on:
+  release:
+    types:
+      - created
 
 jobs:
   test:
@@ -23,12 +26,8 @@ jobs:
       - name: Install dependencies
         run: yarn
 
-      # Build is not required to test it, but it is better to see if it is building with no issue
-      - name: Building
-        run: yarn build
-
       - name: Running tests
         run: yarn test
-        env:
-          REDIS_HOST: redis
-          REDIS_PORT: 6379
+
+      - name: Publishing
+        run: yarn publish
