@@ -3,6 +3,9 @@ import * as Redis from "ioredis"
 import { RedisClient, ObjectPool } from "."
 import { expect } from "chai"
 
+const REDIS_HOST = process.env.REDIS_HOST || 'localhost'
+const REDIS_PORT = parseInt(process.env.REDIS_PORT, 10) || 6379
+
 describe('ObjectPool', () => {
     let redis: RedisClient
     let pool: string
@@ -11,8 +14,8 @@ describe('ObjectPool', () => {
     beforeEach(
         () => {
             redis = new Redis({
-                host: 'localhost',
-                port: 6379,
+                host: REDIS_HOST,
+                port: REDIS_PORT,
             })
             pool = uuidV4()
             objectPool = new ObjectPool(
