@@ -1,0 +1,12 @@
+{
+    "compilerOptions": {
+        "target": "ES2021",
+        "declaration": true,
+        "outDir": "lib",
+        "sourceMap": true,
+        "moduleResolution": "Node"
+    },
+    "include": [
+        "src"
+    ]
+}

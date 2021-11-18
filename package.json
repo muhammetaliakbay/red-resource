@@ -1,0 +1,19 @@
+{
+    "name": "red-resource",
+    "version": "0.0.0",
+    "types": "lib/index.d.ts",
+    "main": "lib/index.js",
+    "scripts": {
+        "build": "tsc"
+    },
+    "dependencies": {
+        "ioredis": "^4.28.0",
+        "uuid": "^8.3.2"
+    },
+    "devDependencies": {
+        "typescript": "^4.4.4",
+        "@types/node": "^16.11.1",
+        "@types/ioredis": "^4.28.1",
+        "@types/uuid": "^8.3.1"
+    }
+}
