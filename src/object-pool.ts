@@ -120,6 +120,7 @@ export class ObjectPool {
                 redis.call('SETEX', keyObjectSession, expirationSeconds, session)
 
                 local keyClaimedObjects = KEYS[2]
+                local object = ARGV[3]
                 redis.call('LREM', keyClaimedObjects, 1, object)
                 redis.call('RPUSH', keyClaimedObjects, object)
 
@@ -133,6 +134,7 @@ export class ObjectPool {
 
             session,
             expirationSeconds,
+            object,
         )
 
         return result === 1

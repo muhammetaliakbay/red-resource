@@ -30,7 +30,7 @@ describe('ObjectPool', () => {
         }
     )
 
-    async function checkRedis({
+    async function checkState({
         all,
         queue,
         claims,
@@ -83,6 +83,19 @@ describe('ObjectPool', () => {
         )
         expect(expiredSession).to.equal(session)
     }
+
+    async function getExpire(object: string, session: string) {
+        const currentSession = await redis.get(
+            objectPool.keyObjectSession(object)
+        );
+        expect(currentSession).to.equal(session)
+        return Math.max(
+            await redis.ttl(
+                objectPool.keyObjectSession(object)
+            ),
+            0,
+        )
+    }
     
     describe('queue method', () => {
         it('should queue the object', async () => {
@@ -92,7 +105,7 @@ describe('ObjectPool', () => {
     
             expect(result).to.deep.equal([object])
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [object],
                 claims: [],
@@ -113,7 +126,7 @@ describe('ObjectPool', () => {
             expect(result).have.members([...objects])
             expect(result).have.length(objects.size)
 
-            await checkRedis({
+            await checkState({
                 all: objects,
                 queue: objects,
                 claims: [],
@@ -139,7 +152,7 @@ describe('ObjectPool', () => {
             expect(result).have.members([...objects])
             expect(result).have.length(objects.size)
 
-            await checkRedis({
+            await checkState({
                 all: objects,
                 queue: objects,
                 claims: [],
@@ -154,7 +167,7 @@ describe('ObjectPool', () => {
     
             expect(result).to.deep.equal([])
 
-            await checkRedis({
+            await checkState({
                 all: [],
                 queue: [],
                 claims: [],
@@ -170,7 +183,7 @@ describe('ObjectPool', () => {
             expect(resultA).to.deep.equal([object])
             expect(resultB).to.deep.equal([])
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [object],
                 claims: [],
@@ -195,7 +208,7 @@ describe('ObjectPool', () => {
             expect(typeof session).to.equal('string')
             expect(claimedObjects).to.deep.equal([object])
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [],
                 claims: [object],
@@ -214,7 +227,7 @@ describe('ObjectPool', () => {
             expect(typeof session).to.equal('string')
             expect(claimedObjects).to.deep.equal([])
 
-            await checkRedis({
+            await checkState({
                 all: [],
                 queue: [],
                 claims: [],
@@ -239,7 +252,7 @@ describe('ObjectPool', () => {
     
             expect(claimedObjectsB).to.deep.equal([])
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [],
                 claims: [object],
@@ -249,7 +262,7 @@ describe('ObjectPool', () => {
             })
         })
 
-        it('should not claim expired object', async () => {
+        it('should not claim expired (not yet cleaned) object', async () => {
             const object = uuidV4()
 
             await objectPool.queue(object)
@@ -269,7 +282,7 @@ describe('ObjectPool', () => {
     
             expect(claimedObjectsB).to.deep.equal([])
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [],
                 claims: [object],
@@ -295,7 +308,7 @@ describe('ObjectPool', () => {
 
             await objectPool.clean()
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [object],
                 claims: [],
@@ -311,12 +324,265 @@ describe('ObjectPool', () => {
     
             expect(claimedObjectsB).to.deep.equal([object])
 
-            await checkRedis({
+            await checkState({
                 all: [object],
                 queue: [],
                 claims: [object],
                 objectSessions: {
                     [object]: sessionB,
+                },
+            })
+        })
+
+        it('should not claim released object', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session: sessionA,
+                objects: claimedObjectsA,
+            } = await objectPool.claim(1, 60)
+
+            expect(claimedObjectsA).to.deep.equal([object])
+
+            const releaseResult = await objectPool.release(object, sessionA)
+            expect(releaseResult).to.be.true;
+
+            const {
+                objects: claimedObjectsB,
+            } = await objectPool.claim(1, 60)
+    
+            expect(claimedObjectsB).to.deep.equal([])
+
+            await checkState({
+                all: [],
+                queue: [],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+    })
+
+    describe('extend method', () => {
+        it('should extend the claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 10)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(10)
+
+            const result = await objectPool.extend(object, session, 60)
+            expect(result).to.be.true
+
+            const expireB = await getExpire(object, session)
+            expect(expireB).greaterThan(10).and.lessThanOrEqual(60)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: session,
+                },
+            })
+        })
+
+        it('should not extend expired claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            const result = await objectPool.extend(object, session, 60)
+            expect(result).to.be.false
+
+            const expireC = await getExpire(object, null)
+            expect(expireC).to.equal(0)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not extend cleaned claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+            await objectPool.clean()
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            const result = await objectPool.extend(object, session, 60)
+            expect(result).to.be.false
+
+            const expireC = await getExpire(object, null)
+            expect(expireC).to.equal(0)
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not extend released claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            const releaseResult = await objectPool.release(object, session)
+            expect(releaseResult).to.be.true
+
+            const result = await objectPool.extend(object, session, 60)
+            expect(result).to.be.false
+
+            const expireC = await getExpire(object, null)
+            expect(expireC).to.equal(0)
+
+            await checkState({
+                all: [],
+                queue: [],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+    })
+
+    describe('release method', () => {
+        it('should release the claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: session,
+                },
+            })
+
+            const result = await objectPool.release(object, session)
+            expect(result).to.be.true
+
+            await checkState({
+                all: [],
+                queue: [],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not release expired claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            const result = await objectPool.release(object, session)
+            expect(result).to.be.false
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not release cleaned claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+            await objectPool.clean()
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            const result = await objectPool.release(object, session)
+            expect(result).to.be.false
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
                 },
             })
         })
