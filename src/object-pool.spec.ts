@@ -334,6 +334,56 @@ describe('ObjectPool', () => {
             })
         })
 
+        it('should claim requeued object', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session: sessionA,
+                objects: claimedObjectsA,
+            } = await objectPool.claim(1, 60)
+
+            expect(claimedObjectsA).to.deep.equal([object])
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: sessionA,
+                },
+            })
+
+            const requeueResult = await objectPool.requeue(object, sessionA)
+            expect(requeueResult).to.be.true
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+
+            const {
+                session: sessionB,
+                objects: claimedObjectsB,
+            } = await objectPool.claim(1, 60)
+    
+            expect(claimedObjectsB).to.deep.equal([object])
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: sessionB,
+                },
+            })
+        })
+
         it('should not claim released object', async () => {
             const object = uuidV4()
 
@@ -575,6 +625,148 @@ describe('ObjectPool', () => {
             expect(expireB).to.equal(0)
 
             const result = await objectPool.release(object, session)
+            expect(result).to.be.false
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+    })
+
+    describe('requeue method', () => {
+        it('should requeue the claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const result = await objectPool.requeue(object, session)
+            expect(result).to.be.true
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should requeue extended claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 10)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(10)
+
+            await objectPool.extend(object, session, 60)
+
+            const expireB = await getExpire(object, session)
+            expect(expireB).greaterThan(0).and.lessThanOrEqual(60)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: session,
+                },
+            })
+
+            const result = await objectPool.requeue(object, session)
+            expect(result).to.be.true
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not requeue expired claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+
+            const result = await objectPool.requeue(object, session)
+            expect(result).to.be.false
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not requeue cleaned claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+            await objectPool.clean()
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+
+            const result = await objectPool.requeue(object, session)
             expect(result).to.be.false
 
             await checkState({
