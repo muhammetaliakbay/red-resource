@@ -213,7 +213,7 @@ export class ObjectPool {
         return result === 1
     }
 
-    async clean(): Promise<void> {
+    async clean(): Promise<string[]> {
         return await this.redis.eval(
             `
                 local keyClaimedObjects = KEYS[1]
@@ -226,11 +226,16 @@ export class ObjectPool {
                 for i=0,(claimedObjectCount - 1) do
                     local object = redis.call('LINDEX', keyClaimedObjects, i)
                     local keyObjectSession = partialKeyObjectSession..object
+                    local objectSessionExists = redis.call('EXISTS', keyObjectSession)
                     
-                    if keyObjectSession == nil then
+                    if objectSessionExists == 1 then
                         break
                     end
                     total = total + 1
+                end
+
+                if total == 0 then
+                    return {}
                 end
                 
                 local requeuedObjects = redis.call('LPOP', keyClaimedObjects, total)

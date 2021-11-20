@@ -779,4 +779,79 @@ describe('ObjectPool', () => {
             })
         })
     })
+
+    describe('clean method', () => {
+        it('should clean expired claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await forceExpire(object, session)
+
+            const expireB = await getExpire(object, null)
+            expect(expireB).to.equal(0)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+
+            const cleanedObjects = await objectPool.clean()
+            expect(cleanedObjects).to.deep.equal([object])
+
+            await checkState({
+                all: [object],
+                queue: [object],
+                claims: [],
+                objectSessions: {
+                    [object]: null,
+                },
+            })
+        })
+
+        it('should not clean non-expired claim', async () => {
+            const object = uuidV4()
+
+            await objectPool.queue(object)
+
+            const {
+                session,
+            } = await objectPool.claim(1, 60)
+
+            const expireA = await getExpire(object, session)
+            expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: session,
+                },
+            })
+
+            const cleanedObjects = await objectPool.clean()
+            expect(cleanedObjects).to.deep.equal([])
+
+            await checkState({
+                all: [object],
+                queue: [],
+                claims: [object],
+                objectSessions: {
+                    [object]: session,
+                },
+            })
+        })
+    })
 })
