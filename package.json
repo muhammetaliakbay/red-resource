@@ -1,6 +1,6 @@
 {
     "name": "red-resource",
-    "version": "0.1.0-dev1",
+    "version": "0.1.0-dev2",
     "types": "lib/index.d.ts",
     "main": "lib/index.js",
     "files": [
@@ -13,7 +13,8 @@
     },
     "dependencies": {
         "ioredis": "^4.28.0",
-        "uuid": "^8.3.2"
+        "uuid": "^8.3.2",
+        "rxjs": "^7.4.0"
     },
     "devDependencies": {
         "typescript": "^4.4.4",

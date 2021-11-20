@@ -1,3 +1,4 @@
+import { BehaviorSubject, concat, concatMap, exhaustMap, filter, map, merge, observable, Observable, of, share, Subject, switchMap, tap, timer } from "rxjs";
 import { ObjectPoolClient } from "./object-pool-client";
 
 const claimTTLSeconds = 30
@@ -15,17 +16,39 @@ async function retry<T>(task: () => Promise<T> | T): Promise<T> {
     }
 }
 
+export enum ClaimState {
+    Claimed = 'claimed',
+    Extending = 'extending',
+    Releasing = 'releasing',
+    Released = 'released',
+    Requeuing = 'requeuing',
+    Requeued = 'requeued',
+    Expired = 'expired',
+}
+const TerminalClaimStates = [
+    ClaimState.Expired,
+    ClaimState.Released,
+    ClaimState.Requeued,
+] as const
+
+function isTerminalClaimState(state: ClaimState): state is typeof TerminalClaimStates[number] {
+    return TerminalClaimStates.includes(state as any)
+}
+
 export class Claim {
     private promise: Promise<any> = Promise.resolve()
     private timeout: NodeJS.Timeout
-    private state: 'claimed' | 'extending' | 'releasing' | 'released' | 'requeuing' | 'requeued' | 'unclaimed'
+    private stateSubject = new BehaviorSubject<ClaimState>(ClaimState.Claimed)
+    get state(): ClaimState {
+        return this.stateSubject.value
+    }
+    readonly $state: Observable<ClaimState> = this.stateSubject.asObservable()
 
     constructor(
         readonly object: string,
         readonly session: string,
         readonly pool: ObjectPool,
     ) {
-        this.setState('claimed')
     }
 
     private block<T>(task: () => Promise<T> | T): Promise<T> {
@@ -34,9 +57,14 @@ export class Claim {
         return promise
     }
 
-    private setState(state: typeof this.state) {
-        this.state = state
-        if (state === 'claimed') {
+    private setState(state: ClaimState) {
+        if (this.state === state) {
+            return
+        } else if (isTerminalClaimState(this.state)) {
+            throw new Error(`In terminal state (${this.state}) already. Bug.`)
+        }
+
+        if (state === ClaimState.Claimed) {
             if (this.timeout == null) {
                 this.timeout = setTimeout(
                     this.extend.bind(this),
@@ -49,15 +77,20 @@ export class Claim {
                 this.timeout = null
             }
         }
+
+        this.stateSubject.next(state)
+        if (isTerminalClaimState(state)) {
+            this.stateSubject.complete()
+        }
     }
 
     release(): Promise<boolean> {
         return this.block(
             async () => {
-                if (this.state != 'claimed') {
+                if (this.state != ClaimState.Claimed) {
                     return false
                 }
-                this.setState('releasing')
+                this.setState(ClaimState.Releasing)
                 const result = await retry(
                     () => this.pool.client.release(
                         this.object,
@@ -65,9 +98,9 @@ export class Claim {
                     )
                 )
                 if (result) {
-                    this.setState('released')
+                    this.setState(ClaimState.Released)
                 } else {
-                    this.setState('unclaimed')
+                    this.setState(ClaimState.Expired)
                 }
                 return result
             }
@@ -77,10 +110,10 @@ export class Claim {
     requeue(): Promise<boolean> {
         return this.block(
             async () => {
-                if (this.state != 'claimed') {
+                if (this.state != ClaimState.Claimed) {
                     return false
                 }
-                this.setState('requeuing')
+                this.setState(ClaimState.Requeuing)
                 const result = await retry(
                     () => this.pool.client.requeue(
                         this.object,
@@ -88,9 +121,9 @@ export class Claim {
                     )
                 )
                 if (result) {
-                    this.setState('requeued')
+                    this.setState(ClaimState.Requeued)
                 } else {
-                    this.setState('unclaimed')
+                    this.setState(ClaimState.Expired)
                 }
                 return result
             }
@@ -100,10 +133,10 @@ export class Claim {
     extend(): Promise<boolean> {
         return this.block(
             async () => {
-                if (this.state != 'claimed') {
+                if (this.state != ClaimState.Claimed) {
                     return false
                 }
-                this.setState('extending')
+                this.setState(ClaimState.Extending)
                 const result = await retry(
                     () => this.pool.client.extend(
                         this.object,
@@ -112,15 +145,17 @@ export class Claim {
                     )
                 )
                 if (result) {
-                    this.setState('claimed')
+                    this.setState(ClaimState.Claimed)
                 } else {
-                    this.setState('unclaimed')
+                    this.setState(ClaimState.Expired)
                 }
                 return result
             }
         )
     }
 }
+
+const claimSignalPeriodMS = 10_000
 
 export class ObjectPool {
     constructor(
@@ -131,6 +166,16 @@ export class ObjectPool {
     queue(...objects: string[]): Promise<string[]> {
         return this.client.queue(...objects)
     }
+
+    clean(): Promise<string[]> {
+        return this.client.clean()
+    }
+    readonly $clean: Observable<string[]> = timer(claimTTLSeconds * 1000).pipe(
+        exhaustMap(
+            () => this.clean(),
+        ),
+        share(),
+    )
 
     async claim(maxCount: number = 1): Promise<Claim[]> {
         const {
@@ -143,6 +188,54 @@ export class ObjectPool {
                 session,
                 this,
             )
+        )
+    }
+
+    private $claimSignal = concat(
+        of(-1),
+        this.client.$hasQueued.pipe(
+            switchMap(
+                () => concat(
+                    of(-1),
+                    timer(claimSignalPeriodMS),
+                )
+            )
+        ),
+    )
+
+    $claim(maxClaimedCount: number = 1): Observable<Claim> {
+        let $hasFreeSpace = new Subject<void>()
+        let claimedCount = 0
+        return merge(
+            this.$claimSignal,
+            $hasFreeSpace,
+        ).pipe(
+            map(
+                () => maxClaimedCount - claimedCount,
+            ),
+            filter(
+                maxCount => maxCount > 0,
+            ),
+            exhaustMap(
+                maxCount => this.claim(maxCount),
+            ),
+            concatMap(
+                newClaims => newClaims,
+            ),
+            tap(
+                claim => {
+                    claimedCount ++;
+                    claim.$state.subscribe({
+                        complete: () => {
+                            claimedCount --;
+                            if (claimedCount === 0) {
+                                $hasFreeSpace.next()
+                            }
+                        }
+                    })
+                }
+            ),
+            share(),
         )
     }
 }

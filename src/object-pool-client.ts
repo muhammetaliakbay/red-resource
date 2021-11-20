@@ -1,5 +1,6 @@
 import type { RedisClient } from "./redis";
 import { v4 as uuidV4 } from "uuid"
+import { Observable, share } from "rxjs"
 
 export class ObjectPoolClient {
     constructor(
@@ -8,6 +9,39 @@ export class ObjectPoolClient {
     ) {
     }
 
+    private subscriberRedis: RedisClient = null
+    readonly $hasQueued: Observable<void> = new Observable<void>(
+        subscriber => {
+            if (this.subscriberRedis == null) {
+                this.subscriberRedis = this.redis.duplicate()
+            }
+
+            const onMessage = (channel: string, message: string) => {
+                subscriber.next()
+            }
+            this.subscriberRedis.on('message', onMessage)
+
+            const onError = (err: Error) => {
+                subscriber.error(err)
+            }
+            this.subscriberRedis.on('error', onError)
+            
+            this.subscriberRedis.subscribe(this.channelHasQueued).catch(
+                err => subscriber.error(err)
+            )
+
+            return () => {
+                this.subscriberRedis.off('message', onMessage)
+                this.subscriberRedis.off('error', onError)
+                this.subscriberRedis.unsubscribe(this.channelHasQueued)
+                this.subscriberRedis.disconnect()
+            }
+        }
+    ).pipe(
+        share(),
+    )
+
+    readonly channelHasQueued = `${this.pool}:queued` as const
     readonly keyAllObjects = `${this.pool}:all` as const
     readonly keyObjectQueue = `${this.pool}:queue` as const
     readonly keyQueuedObjects = `${this.pool}:queued` as const
@@ -22,7 +56,7 @@ export class ObjectPoolClient {
         if (objects.length === 0) {
             return []
         }
-        return await this.redis.eval(
+        const queuedObjects: string[] = await this.redis.eval(
             `
                 local tmpKeyNewObjects = KEYS[1]
                 local keyAllObjects = KEYS[2]
@@ -52,6 +86,12 @@ export class ObjectPoolClient {
 
             ...objects,
         )
+
+        if (queuedObjects.length > 0) {
+            await this.redis.publish(this.channelHasQueued, '')
+        }
+
+        return queuedObjects
     }
 
     async claim(maxCount: number, expirationSeconds: number): Promise<{session: string, objects: string[]}> {
@@ -209,12 +249,17 @@ export class ObjectPoolClient {
             session,
             object,
         )
+        const isRequeued = result === 1
 
-        return result === 1
+        if (isRequeued) {
+            await this.redis.publish(this.channelHasQueued, '')
+        }
+
+        return isRequeued
     }
 
     async clean(): Promise<string[]> {
-        return await this.redis.eval(
+        const requeuedObjects: string[] = await this.redis.eval(
             `
                 local keyClaimedObjects = KEYS[1]
                 local claimedObjectCount = redis.call('LLEN', keyClaimedObjects)
@@ -256,5 +301,11 @@ export class ObjectPoolClient {
 
             this.partialKeyObjectSession,
         )
+
+        if (requeuedObjects.length > 0) {
+            await this.redis.publish(this.channelHasQueued, '')
+        }
+
+        return requeuedObjects
     }
 }
