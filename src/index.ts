@@ -1,2 +1,2 @@
 export type { RedisClient } from "./redis"
-export { ObjectPool } from "./object-pool"
+export { ObjectPoolClient } from "./object-pool-client"

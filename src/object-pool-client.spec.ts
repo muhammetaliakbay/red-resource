@@ -1,15 +1,15 @@
 import { v4 as uuidV4 } from "uuid"
 import * as Redis from "ioredis"
-import { RedisClient, ObjectPool } from "."
 import { expect } from "chai"
+import { RedisClient } from "./redis"
+import { ObjectPoolClient } from "./object-pool-client"
 
 const REDIS_HOST = process.env.REDIS_HOST || 'localhost'
 const REDIS_PORT = parseInt(process.env.REDIS_PORT, 10) || 6379
 
-describe('ObjectPool', () => {
+describe('ObjectPoolClient', () => {
     let redis: RedisClient
-    let pool: string
-    let objectPool: ObjectPool
+    let client: ObjectPoolClient
 
     beforeEach(
         () => {
@@ -17,10 +17,10 @@ describe('ObjectPool', () => {
                 host: REDIS_HOST,
                 port: REDIS_PORT,
             })
-            pool = uuidV4()
-            objectPool = new ObjectPool(
+            const poolName = uuidV4()
+            client = new ObjectPoolClient(
                 redis,
-                pool,
+                poolName,
             )
         }
     )
@@ -43,10 +43,10 @@ describe('ObjectPool', () => {
             [object: string]: string | null,
         },
     }) {
-        const allObjects = await redis.smembers(objectPool.keyAllObjects)
-        const queuedObjects = await redis.smembers(objectPool.keyQueuedObjects)
-        const objectQueue = await redis.lrange(objectPool.keyObjectQueue, 0, -1)
-        const claimedObjects = await redis.lrange(objectPool.keyClaimedObjects, 0, -1)
+        const allObjects = await redis.smembers(client.keyAllObjects)
+        const queuedObjects = await redis.smembers(client.keyQueuedObjects)
+        const objectQueue = await redis.lrange(client.keyObjectQueue, 0, -1)
+        const claimedObjects = await redis.lrange(client.keyClaimedObjects, 0, -1)
         
         if (!(all instanceof Set)) {
             all = new Set<string>(all)
@@ -71,7 +71,7 @@ describe('ObjectPool', () => {
 
         for(const [object, session] of Object.entries(objectSessions)) {
             const objectSession = await redis.get(
-                objectPool.keyObjectSession(object)
+                client.keyObjectSession(object)
             )
             expect(objectSession).to.equal(session)
         }
@@ -79,19 +79,19 @@ describe('ObjectPool', () => {
 
     async function forceExpire(object: string, session: string) {
         const expiredSession = await redis.getdel(
-            objectPool.keyObjectSession(object)
+            client.keyObjectSession(object)
         )
         expect(expiredSession).to.equal(session)
     }
 
     async function getExpire(object: string, session: string) {
         const currentSession = await redis.get(
-            objectPool.keyObjectSession(object)
+            client.keyObjectSession(object)
         );
         expect(currentSession).to.equal(session)
         return Math.max(
             await redis.ttl(
-                objectPool.keyObjectSession(object)
+                client.keyObjectSession(object)
             ),
             0,
         )
@@ -101,7 +101,7 @@ describe('ObjectPool', () => {
         it('should queue the object', async () => {
             const object = uuidV4()
     
-            const result = await objectPool.queue(object)
+            const result = await client.queue(object)
     
             expect(result).to.deep.equal([object])
 
@@ -121,7 +121,7 @@ describe('ObjectPool', () => {
                 objects.add(uuidV4())
             }
     
-            const result = await objectPool.queue(...objects)
+            const result = await client.queue(...objects)
     
             expect(result).have.members([...objects])
             expect(result).have.length(objects.size)
@@ -147,7 +147,7 @@ describe('ObjectPool', () => {
                 }
             }
     
-            const result = await objectPool.queue(...objects, ...repeatingObjects)
+            const result = await client.queue(...objects, ...repeatingObjects)
     
             expect(result).have.members([...objects])
             expect(result).have.length(objects.size)
@@ -163,7 +163,7 @@ describe('ObjectPool', () => {
         })
     
         it('should do nothing for empty input', async () => {
-            const result = await objectPool.queue()
+            const result = await client.queue()
     
             expect(result).to.deep.equal([])
 
@@ -177,8 +177,8 @@ describe('ObjectPool', () => {
         it('should not queue an existing object', async () => {
             const object = uuidV4()
     
-            const resultA = await objectPool.queue(object)
-            const resultB = await objectPool.queue(object)
+            const resultA = await client.queue(object)
+            const resultB = await client.queue(object)
 
             expect(resultA).to.deep.equal([object])
             expect(resultB).to.deep.equal([])
@@ -198,12 +198,12 @@ describe('ObjectPool', () => {
         it('should claim the object', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
     
             const {
                 session,
                 objects: claimedObjects,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(typeof session).to.equal('string')
             expect(claimedObjects).to.deep.equal([object])
@@ -222,7 +222,7 @@ describe('ObjectPool', () => {
             const {
                 session,
                 objects: claimedObjects,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(typeof session).to.equal('string')
             expect(claimedObjects).to.deep.equal([])
@@ -237,18 +237,18 @@ describe('ObjectPool', () => {
         it('should not claim already claimed object', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session: sessionA,
                 objects: claimedObjectsA,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             expect(claimedObjectsA).to.deep.equal([object])
 
             const {
                 objects: claimedObjectsB,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(claimedObjectsB).to.deep.equal([])
 
@@ -265,12 +265,12 @@ describe('ObjectPool', () => {
         it('should not claim expired (not yet cleaned) object', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session: sessionA,
                 objects: claimedObjectsA,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             expect(claimedObjectsA).to.deep.equal([object])
 
@@ -278,7 +278,7 @@ describe('ObjectPool', () => {
 
             const {
                 objects: claimedObjectsB,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(claimedObjectsB).to.deep.equal([])
 
@@ -295,18 +295,18 @@ describe('ObjectPool', () => {
         it('should claim cleaned object', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session: sessionA,
                 objects: claimedObjectsA,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             expect(claimedObjectsA).to.deep.equal([object])
 
             await forceExpire(object, sessionA)
 
-            await objectPool.clean()
+            await client.clean()
 
             await checkState({
                 all: [object],
@@ -320,7 +320,7 @@ describe('ObjectPool', () => {
             const {
                 session: sessionB,
                 objects: claimedObjectsB,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(claimedObjectsB).to.deep.equal([object])
 
@@ -337,12 +337,12 @@ describe('ObjectPool', () => {
         it('should claim requeued object', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session: sessionA,
                 objects: claimedObjectsA,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             expect(claimedObjectsA).to.deep.equal([object])
 
@@ -355,7 +355,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const requeueResult = await objectPool.requeue(object, sessionA)
+            const requeueResult = await client.requeue(object, sessionA)
             expect(requeueResult).to.be.true
 
             await checkState({
@@ -370,7 +370,7 @@ describe('ObjectPool', () => {
             const {
                 session: sessionB,
                 objects: claimedObjectsB,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(claimedObjectsB).to.deep.equal([object])
 
@@ -387,21 +387,21 @@ describe('ObjectPool', () => {
         it('should not claim released object', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session: sessionA,
                 objects: claimedObjectsA,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             expect(claimedObjectsA).to.deep.equal([object])
 
-            const releaseResult = await objectPool.release(object, sessionA)
+            const releaseResult = await client.release(object, sessionA)
             expect(releaseResult).to.be.true;
 
             const {
                 objects: claimedObjectsB,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
     
             expect(claimedObjectsB).to.deep.equal([])
 
@@ -420,16 +420,16 @@ describe('ObjectPool', () => {
         it('should extend the claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 10)
+            } = await client.claim(1, 10)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(10)
 
-            const result = await objectPool.extend(object, session, 60)
+            const result = await client.extend(object, session, 60)
             expect(result).to.be.true
 
             const expireB = await getExpire(object, session)
@@ -448,11 +448,11 @@ describe('ObjectPool', () => {
         it('should not extend expired claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
@@ -462,7 +462,7 @@ describe('ObjectPool', () => {
             const expireB = await getExpire(object, null)
             expect(expireB).to.equal(0)
 
-            const result = await objectPool.extend(object, session, 60)
+            const result = await client.extend(object, session, 60)
             expect(result).to.be.false
 
             const expireC = await getExpire(object, null)
@@ -481,22 +481,22 @@ describe('ObjectPool', () => {
         it('should not extend cleaned claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
 
             await forceExpire(object, session)
-            await objectPool.clean()
+            await client.clean()
 
             const expireB = await getExpire(object, null)
             expect(expireB).to.equal(0)
 
-            const result = await objectPool.extend(object, session, 60)
+            const result = await client.extend(object, session, 60)
             expect(result).to.be.false
 
             const expireC = await getExpire(object, null)
@@ -515,19 +515,19 @@ describe('ObjectPool', () => {
         it('should not extend released claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
 
-            const releaseResult = await objectPool.release(object, session)
+            const releaseResult = await client.release(object, session)
             expect(releaseResult).to.be.true
 
-            const result = await objectPool.extend(object, session, 60)
+            const result = await client.extend(object, session, 60)
             expect(result).to.be.false
 
             const expireC = await getExpire(object, null)
@@ -548,11 +548,11 @@ describe('ObjectPool', () => {
         it('should release the claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             await checkState({
                 all: [object],
@@ -563,7 +563,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const result = await objectPool.release(object, session)
+            const result = await client.release(object, session)
             expect(result).to.be.true
 
             await checkState({
@@ -579,11 +579,11 @@ describe('ObjectPool', () => {
         it('should not release expired claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
@@ -593,7 +593,7 @@ describe('ObjectPool', () => {
             const expireB = await getExpire(object, null)
             expect(expireB).to.equal(0)
 
-            const result = await objectPool.release(object, session)
+            const result = await client.release(object, session)
             expect(result).to.be.false
 
             await checkState({
@@ -609,22 +609,22 @@ describe('ObjectPool', () => {
         it('should not release cleaned claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
 
             await forceExpire(object, session)
-            await objectPool.clean()
+            await client.clean()
 
             const expireB = await getExpire(object, null)
             expect(expireB).to.equal(0)
 
-            const result = await objectPool.release(object, session)
+            const result = await client.release(object, session)
             expect(result).to.be.false
 
             await checkState({
@@ -642,13 +642,13 @@ describe('ObjectPool', () => {
         it('should requeue the claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
-            const result = await objectPool.requeue(object, session)
+            const result = await client.requeue(object, session)
             expect(result).to.be.true
 
             await checkState({
@@ -664,16 +664,16 @@ describe('ObjectPool', () => {
         it('should requeue extended claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 10)
+            } = await client.claim(1, 10)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(10)
 
-            await objectPool.extend(object, session, 60)
+            await client.extend(object, session, 60)
 
             const expireB = await getExpire(object, session)
             expect(expireB).greaterThan(0).and.lessThanOrEqual(60)
@@ -687,7 +687,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const result = await objectPool.requeue(object, session)
+            const result = await client.requeue(object, session)
             expect(result).to.be.true
 
             await checkState({
@@ -703,11 +703,11 @@ describe('ObjectPool', () => {
         it('should not requeue expired claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
@@ -726,7 +726,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const result = await objectPool.requeue(object, session)
+            const result = await client.requeue(object, session)
             expect(result).to.be.false
 
             await checkState({
@@ -742,17 +742,17 @@ describe('ObjectPool', () => {
         it('should not requeue cleaned claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
 
             await forceExpire(object, session)
-            await objectPool.clean()
+            await client.clean()
 
             const expireB = await getExpire(object, null)
             expect(expireB).to.equal(0)
@@ -766,7 +766,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const result = await objectPool.requeue(object, session)
+            const result = await client.requeue(object, session)
             expect(result).to.be.false
 
             await checkState({
@@ -784,11 +784,11 @@ describe('ObjectPool', () => {
         it('should clean expired claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
@@ -807,7 +807,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const cleanedObjects = await objectPool.clean()
+            const cleanedObjects = await client.clean()
             expect(cleanedObjects).to.deep.equal([object])
 
             await checkState({
@@ -823,11 +823,11 @@ describe('ObjectPool', () => {
         it('should not clean non-expired claim', async () => {
             const object = uuidV4()
 
-            await objectPool.queue(object)
+            await client.queue(object)
 
             const {
                 session,
-            } = await objectPool.claim(1, 60)
+            } = await client.claim(1, 60)
 
             const expireA = await getExpire(object, session)
             expect(expireA).greaterThan(0).and.lessThanOrEqual(60)
@@ -841,7 +841,7 @@ describe('ObjectPool', () => {
                 },
             })
 
-            const cleanedObjects = await objectPool.clean()
+            const cleanedObjects = await client.clean()
             expect(cleanedObjects).to.deep.equal([])
 
             await checkState({
