@@ -2,7 +2,7 @@ import { ObjectPoolClient } from "./object-pool-client";
 
 const claimTTLSeconds = 30
 
-async function retry(task: () => Promise<T> | T): Promise<T> {
+async function retry<T>(task: () => Promise<T> | T): Promise<T> {
     while(true) {
         try {
             return await task()
