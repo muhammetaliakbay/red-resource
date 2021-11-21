@@ -25,13 +25,13 @@ export enum ClaimState {
     Requeued = 'requeued',
     Expired = 'expired',
 }
-const TerminalClaimStates = [
+export const TerminalClaimStates = [
     ClaimState.Expired,
     ClaimState.Released,
     ClaimState.Requeued,
 ] as const
 
-function isTerminalClaimState(state: ClaimState): state is typeof TerminalClaimStates[number] {
+export function isTerminalClaimState(state: ClaimState): state is typeof TerminalClaimStates[number] {
     return TerminalClaimStates.includes(state as any)
 }
 

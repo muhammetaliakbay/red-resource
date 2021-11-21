@@ -1,3 +1,6 @@
 export type { RedisClient } from "./redis"
 export { ObjectPoolClient } from "./object-pool-client"
-export { ObjectPool } from "./object-pool"
+export { ObjectPool, Claim, ClaimState } from "./object-pool"
+export { ObjectPoolModule } from "./object-pool.module"
+export { ObjectPoolRegistry } from "./object-pool.registry"
+export { ObjectClaim, PoolObject, ObjectProcessor, ObjectProcessorOptions } from "./processor.decorator"
