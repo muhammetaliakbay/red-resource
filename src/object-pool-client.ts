@@ -172,10 +172,14 @@ export class ObjectPoolClient {
                     else
                         local pairTagValue = tag .. ':' .. value
                         local keyTaggedQueue = partialKeyTaggedQueue .. pairTagValue
+                        redis.call('LREM', keyTaggedQueue, 1, firstObject)
                         local restObjects = redis.call('LPOP', keyTaggedQueue, maxCount - 1)
                         if restObjects == false then
                             objects = { firstObject }
                         else
+                            for _, restObject in ipairs(restObjects) do
+                                redis.call('LREM', keyObjectQueue, 1, restObject)
+                            end
                             objects = { firstObject, unpack(restObjects) }
                         end
                     end
@@ -231,126 +235,154 @@ export class ObjectPoolClient {
         }
     }
 
-    async extend(object: string, session: string, expirationSeconds: number): Promise<boolean> {
+    async extend(object: string | string[], session: string, expirationSeconds: number): Promise<boolean> {
+        const objects = Array.isArray(object) ? object : [object]
+        const keysObjectSession = objects.map(
+            object => this.keyObjectSession(object),
+        )
         const result = await this.redis.eval(
             `
-                local keyObjectSession = KEYS[1]
+                local keysObjectSessionIndex = 2
                 local session = ARGV[1]
-                local currentSession = redis.call('GET', keyObjectSession)
-                if currentSession ~= session then
-                    return 0
+                local currentSessions = redis.call('MGET', unpack(KEYS, keysObjectSessionIndex))
+                for _, currentSession in ipairs(currentSessions) do
+                    if currentSession ~= session then
+                        return 0
+                    end
                 end
 
                 local expirationSeconds = ARGV[2]
-                redis.call('SETEX', keyObjectSession, expirationSeconds, session)
+                for keyObjectSessionIndex=keysObjectSessionIndex,#KEYS do
+                    local keyObjectSession = KEYS[keyObjectSessionIndex]
+                    redis.call('SETEX', keyObjectSession, expirationSeconds, session)
+                end
 
-                local keyClaimedObjects = KEYS[2]
-                local object = ARGV[3]
-                redis.call('LREM', keyClaimedObjects, 1, object)
-                redis.call('RPUSH', keyClaimedObjects, object)
+                local keyClaimedObjects = KEYS[1]
+                local objectsIndex = 3
+                for i=objectsIndex,#ARGV do
+                    local object = ARGV[i]
+                    redis.call('LREM', keyClaimedObjects, 1, object)
+                end
+                redis.call('RPUSH', keyClaimedObjects, unpack(ARGV, objectsIndex))
 
                 return 1
             `,
 
-            2,
+            1 + keysObjectSession.length,
 
-            this.keyObjectSession(object),
             this.keyClaimedObjects,
+            ...keysObjectSession,
 
             session,
             expirationSeconds,
-            object,
+            ...objects,
         )
 
         return result === 1
     }
 
-    async release(object: string, session: string): Promise<boolean> {
+    async release(object: string | string[], session: string): Promise<boolean> {
+        const objects = Array.isArray(object) ? object : [object]
+        const keysObjectSession = objects.map(
+            object => this.keyObjectSession(object),
+        )
         const result = await this.redis.eval(
             `
-                local keyObjectSession = KEYS[1]
+                local keysObjectSessionIndex = 3
                 local session = ARGV[1]
-                local currentSession = redis.call('GET', keyObjectSession)
-                if currentSession ~= session then
-                    return 0
+                local currentSessions = redis.call('MGET', unpack(KEYS, keysObjectSessionIndex))
+                for _, currentSession in ipairs(currentSessions) do
+                    if currentSession ~= session then
+                        return 0
+                    end
                 end
 
-                redis.call('DEL', keyObjectSession)
+                redis.call('DEL', unpack(KEYS, keysObjectSessionIndex))
 
-                local keyAllObjects = KEYS[2]
-                local object = ARGV[2]
-                redis.call('SREM', keyAllObjects, object)
-
-                local keyClaimedObjects = KEYS[3]
-                redis.call('LREM', keyClaimedObjects, 1, object)
-
-                local partialKeyObjectTags = ARGV[3]
-                redis.call('DEL', partialKeyObjectTags..object)
+                local keyAllObjects = KEYS[1]
+                local keyClaimedObjects = KEYS[2]
+                local objectsIndex = 3
+                for i=objectsIndex,#ARGV do
+                    local object = ARGV[i]
+                    redis.call('SREM', keyAllObjects, object)
+                    redis.call('LREM', keyClaimedObjects, 1, object)
+                    
+                    local partialKeyObjectTags = ARGV[2]
+                    redis.call('DEL', partialKeyObjectTags..object)
+                end
 
                 return 1
             `,
 
-            3,
+            2 + keysObjectSession.length,
 
-            this.keyObjectSession(object),
             this.keyAllObjects,
             this.keyClaimedObjects,
+            ...keysObjectSession,
 
             session,
-            object,
             this.partialKeyObjectTags,
+            ...objects,
         )
 
         return result === 1
     }
 
-    async requeue(object: string, session: string): Promise<boolean> {
+    async requeue(object: string | string[], session: string): Promise<boolean> {
+        const objects = Array.isArray(object) ? object : [object]
+        const keysObjectSession = objects.map(
+            object => this.keyObjectSession(object),
+        )
         const result = await this.redis.eval(
             `
-                local keyObjectSession = KEYS[1]
+                local keysObjectSessionIndex = 4
                 local session = ARGV[1]
-                local currentSession = redis.call('GET', keyObjectSession)
-                if currentSession ~= session then
-                    return 0
+                local currentSessions = redis.call('MGET', unpack(KEYS, keysObjectSessionIndex))
+                for _, currentSession in ipairs(currentSessions) do
+                    if currentSession ~= session then
+                        return 0
+                    end
                 end
 
-                redis.call('DEL', keyObjectSession)
+                redis.call('DEL', unpack(KEYS, keysObjectSessionIndex))
                 
-                local keyQueuedObjects = KEYS[2]
-                local keyObjectQueue = KEYS[3]
-                local object = ARGV[2]
-                redis.call('SADD', keyQueuedObjects, object)
-                redis.call('RPUSH', keyObjectQueue, object)
+                local keyQueuedObjects = KEYS[1]
+                local keyObjectQueue = KEYS[2]
+                local objectsIndex = 4
+                redis.call('SADD', keyQueuedObjects, unpack(ARGV, objectsIndex))
+                redis.call('RPUSH', keyObjectQueue, unpack(ARGV, objectsIndex))
 
-                local keyClaimedObjects = KEYS[4]
-                redis.call('LREM', keyClaimedObjects, 1, object)
+                local keyClaimedObjects = KEYS[3]
+                local partialKeyObjectTags = ARGV[2]
+                local partialKeyTaggedQueue = ARGV[3]
+                for i=objectsIndex,#ARGV do
+                    local object = ARGV[i]
+                    redis.call('LREM', keyClaimedObjects, 1, object)
 
-                local partialKeyObjectTags = ARGV[3]
-                local partialKeyTaggedQueue = ARGV[4]
-
-                local tags_values = redis.call('HGETALL', partialKeyObjectTags..object)
-                for i=1,#tags_values,2 do
-                    local tag = tags_values[i]
-                    local value = tags_values[i + 1]
-                    local pairTagValue = tag .. ':' .. value
-                    local keyTaggedQueue = partialKeyTaggedQueue .. pairTagValue
-                    redis.call('RPUSH', keyTaggedQueue, object)
+                    local tags_values = redis.call('HGETALL', partialKeyObjectTags..object)
+                    for i=1,#tags_values,2 do
+                        local tag = tags_values[i]
+                        local value = tags_values[i + 1]
+                        local pairTagValue = tag .. ':' .. value
+                        local keyTaggedQueue = partialKeyTaggedQueue .. pairTagValue
+                        redis.call('RPUSH', keyTaggedQueue, object)
+                    end
                 end
 
                 return 1
             `,
 
-            4,
+            3 + keysObjectSession.length,
 
-            this.keyObjectSession(object),
             this.keyQueuedObjects,
             this.keyObjectQueue,
             this.keyClaimedObjects,
+            ...keysObjectSession,
 
             session,
-            object,
             this.partialKeyObjectTags,
             this.partialKeyTaggedQueue,
+            ...objects,
         )
         const isRequeued = result === 1
 
