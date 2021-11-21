@@ -1,4 +1,6 @@
 import { Claim } from "./object-pool"
+import { Inject } from "@nestjs/common";
+import { getObjectPoolToken } from "./object-pool.token";
 
 export const OBJECT_PROCESSOR_OPTIONS = Symbol('OBJECT_PROCESSOR_OPTIONS')
 export const OBJECT_PROCESSOR_PARAMETERS = Symbol('OBJECT_PROCESSOR_PARAMETERS')
@@ -59,4 +61,10 @@ export function setArgs(args: any[], parameters: ObjectProcessorParameters, clai
                 break;
         }
     }
+}
+
+export function InjectObjectPool(pool: string): ParameterDecorator {
+    return Inject(
+        getObjectPoolToken(pool),
+    )
 }
