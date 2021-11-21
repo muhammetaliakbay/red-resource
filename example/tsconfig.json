@@ -2,7 +2,7 @@
     "compilerOptions": {
         "target": "ES2021",
         "declaration": true,
-        "outDir": "lib",
+        "outDir": "dist",
         "sourceMap": true,
         "moduleResolution": "Node",
         "module": "CommonJS",
@@ -10,9 +10,6 @@
         "emitDecoratorMetadata": true,
     },
     "include": [
-        "src",
-    ],
-    "exclude": [
-        "src/**/*.spec.ts",
+        "./",
     ],
 }
