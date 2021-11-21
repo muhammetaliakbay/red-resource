@@ -35,9 +35,16 @@ describe('ObjectPool', () => {
     )
 
     async function forceExpire(claim: Claim) {
-        const expiredSession = await redis.getdel(
-            pool.client.keyObjectSession(claim.object)
+        const expiredSessions = await Promise.all(
+            claim.objects.map(
+                object =>
+                    redis.getdel(pool.client.keyObjectSession(object))
+            )
         )
-        expect(expiredSession).to.equal(claim.session)
+        expect(expiredSessions).to.deep.equal(
+            claim.objects.map(
+                () => claim.session,
+            ),
+        )
     }
 })

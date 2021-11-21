@@ -1,7 +1,8 @@
 import { Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { InstanceWrapper } from '@nestjs/core/injector/instance-wrapper';
-import { isTerminalClaimState } from './object-pool';
+import { Observable } from 'rxjs';
+import { Claim, isTerminalClaimState } from './object-pool';
 import { ObjectPoolRegistry } from './object-pool.registry';
 import { getOptions, getParameters, setArgs } from './processor.decorator';
 
@@ -68,9 +69,15 @@ export class ObjectProcessorExplorer implements OnApplicationBootstrap, OnApplic
             return
         }
 
-        const parameters = getParameters(instance, key) ?? []
+        let observable: Observable<Claim>;
+        if ('tag' in options) {
+            observable = pool.$claimTagged(options.tag, options.maxClaimCount, options.maxObjectPerClaim)
+        } else {
+            observable = pool.$claim(options.maxClaimCount)
+        }
 
-        const subscription = pool.$claim(options.maxClaimCount).subscribe(
+        const parameters = getParameters(instance, key) ?? []
+        const subscription = observable.subscribe(
             async claim => {
                 try {
                     const args = []

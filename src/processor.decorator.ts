@@ -8,12 +8,16 @@ export const OBJECT_PROCESSOR_PARAMETERS = Symbol('OBJECT_PROCESSOR_PARAMETERS')
 export enum ParameterType {
     Claim = 'claim',
     Object = 'object',
+    Objects = 'objects',
 }
 
-export interface ObjectProcessorOptions {
+export type ObjectProcessorOptions = {
     pool: string
     maxClaimCount: number
-}
+} & ({} | {
+    tag: string,
+    maxObjectPerClaim?: number,
+})
 
 export type ObjectProcessorParameters = {index: number, type: ParameterType}[]
 
@@ -40,6 +44,7 @@ function Parameter(type: ParameterType): ParameterDecorator {
 }
 
 export const PoolObject: ParameterDecorator = Parameter(ParameterType.Object)
+export const PoolObjects: ParameterDecorator = Parameter(ParameterType.Objects)
 export const ObjectClaim: ParameterDecorator = Parameter(ParameterType.Claim)
 
 export function getOptions(target: any, propertyKey: string): ObjectProcessorOptions | undefined {
@@ -56,8 +61,11 @@ export function setArgs(args: any[], parameters: ObjectProcessorParameters, clai
             case ParameterType.Claim:
                 args[index] = claim
                 break;
+            case ParameterType.Objects:
+                args[index] = claim.objects
+                break;
             case ParameterType.Object:
-                args[index] = claim.object
+                args[index] = claim.objects[0]
                 break;
         }
     }

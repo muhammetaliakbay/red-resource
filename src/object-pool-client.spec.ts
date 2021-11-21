@@ -97,11 +97,17 @@ describe('ObjectPoolClient', () => {
         )
     }
     
-    describe('queue method', () => {
+    describe('queue/queueTagged method', () => {
         it('should queue the object', async () => {
             const object = uuidV4()
     
-            const result = await client.queue(object)
+            const result = await client.queueTagged(
+                {
+                    "test-tag-1": "test-value-1",
+                    "test-tag-2": "test-value-2",
+                },
+                [object],
+            )
     
             expect(result).to.deep.equal([object])
 
@@ -198,7 +204,13 @@ describe('ObjectPoolClient', () => {
         it('should claim the object', async () => {
             const object = uuidV4()
 
-            await client.queue(object)
+            await client.queueTagged(
+                {
+                    "test-tag-1": "test-value-1",
+                    "test-tag-2": "test-value-2",
+                },
+                [object],
+            )
     
             const {
                 session,
@@ -548,7 +560,13 @@ describe('ObjectPoolClient', () => {
         it('should release the claim', async () => {
             const object = uuidV4()
 
-            await client.queue(object)
+            await client.queueTagged(
+                {
+                    "test-tag-1": "test-value-1",
+                    "test-tag-2": "test-value-2",
+                },
+                [object],
+            )
 
             const {
                 session,
@@ -642,7 +660,13 @@ describe('ObjectPoolClient', () => {
         it('should requeue the claim', async () => {
             const object = uuidV4()
 
-            await client.queue(object)
+            await client.queueTagged(
+                {
+                    "test-tag-1": "test-value-1",
+                    "test-tag-2": "test-value-2",
+                },
+                [object],
+            )
 
             const {
                 session,

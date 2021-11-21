@@ -14,8 +14,11 @@ export class Generator {
 
     @Interval(1_000)
     async generate() {
-        const object = `${new Date().toLocaleString()}`
+        const testTagValue = Math.floor(Math.random() * 5).toString()
+        const object = `${new Date().toLocaleString()} - #${testTagValue}`
         this.logger.log(`Queuing an object to be processed: ${object}`)
-        await this.pool.queue(object)
+        await this.pool.queueTagged({
+            'test-tag': testTagValue,
+        }, [object])
     }
 }

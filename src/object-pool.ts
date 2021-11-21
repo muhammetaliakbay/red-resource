@@ -45,7 +45,7 @@ export class Claim {
     readonly $state: Observable<ClaimState> = this.stateSubject.asObservable()
 
     constructor(
-        readonly object: string,
+        readonly objects: string[],
         readonly session: string,
         readonly pool: ObjectPool,
     ) {
@@ -93,7 +93,7 @@ export class Claim {
                 this.setState(ClaimState.Releasing)
                 const result = await retry(
                     () => this.pool.client.release(
-                        this.object,
+                        this.objects,
                         this.session,
                     )
                 )
@@ -116,7 +116,7 @@ export class Claim {
                 this.setState(ClaimState.Requeuing)
                 const result = await retry(
                     () => this.pool.client.requeue(
-                        this.object,
+                        this.objects,
                         this.session,
                     )
                 )
@@ -139,7 +139,7 @@ export class Claim {
                 this.setState(ClaimState.Extending)
                 const result = await retry(
                     () => this.pool.client.extend(
-                        this.object,
+                        this.objects,
                         this.session,
                         claimTTLSeconds,
                     )
@@ -163,6 +163,10 @@ export class ObjectPool {
     ) {
     }
 
+    queueTagged(tags: Record<string,string>, objects: string[]): Promise<string[]> {
+        return this.client.queueTagged(tags, objects)
+    }
+
     queue(...objects: string[]): Promise<string[]> {
         return this.client.queue(...objects)
     }
@@ -184,10 +188,25 @@ export class ObjectPool {
         } = await this.client.claim(maxCount, claimTTLSeconds)
         return objects.map(
             object => new Claim(
-                object,
+                [object],
                 session,
                 this,
             )
+        )
+    }
+
+    async claimTagged(tag: string, maxCount: number = 1): Promise<Claim | null> {
+        const {
+            objects,
+            session,
+        } = await this.client.claim(maxCount, claimTTLSeconds, tag)
+        if (objects.length === 0) {
+            return null
+        }
+        return new Claim(
+            objects,
+            session,
+            this,
         )
     }
 
@@ -204,11 +223,11 @@ export class ObjectPool {
     )
 
     $claim(maxClaimedCount: number = 1): Observable<Claim> {
-        let $hasFreeSpace = new Subject<void>()
+        let $feedbackSignal = new Subject<void>()
         let claimedCount = 0
         return merge(
             this.$claimSignal,
-            $hasFreeSpace,
+            $feedbackSignal,
         ).pipe(
             map(
                 () => maxClaimedCount - claimedCount,
@@ -229,10 +248,53 @@ export class ObjectPool {
                         complete: () => {
                             claimedCount --;
                             if (claimedCount === 0) {
-                                $hasFreeSpace.next()
+                                setImmediate(
+                                    () => $feedbackSignal.next()
+                                )
                             }
                         }
                     })
+                    setImmediate(
+                        () => $feedbackSignal.next()
+                    )
+                }
+            ),
+            share(),
+        )
+    }
+
+    $claimTagged(tag: string, maxClaimedCount: number = 1, maxObjectPerClaim: number = 1): Observable<Claim> {
+        let $feedbackSignal = new Subject<void>()
+        let claimedCount = 0
+        return merge(
+            this.$claimSignal,
+            $feedbackSignal,
+        ).pipe(
+            filter(
+                () => maxClaimedCount > claimedCount,
+            ),
+            exhaustMap(
+                () => this.claimTagged(tag, maxObjectPerClaim),
+            ),
+            filter(
+                claim => claim != null
+            ),
+            tap(
+                claim => {
+                    claimedCount ++;
+                    claim.$state.subscribe({
+                        complete: () => {
+                            claimedCount --;
+                            if (claimedCount === 0) {
+                                setImmediate(
+                                    () => $feedbackSignal.next()
+                                )
+                            }
+                        }
+                    })
+                    setImmediate(
+                        () => $feedbackSignal.next()
+                    )
                 }
             ),
             share(),
