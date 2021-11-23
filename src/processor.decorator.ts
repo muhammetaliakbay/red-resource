@@ -14,6 +14,10 @@ export enum ParameterType {
 export type ObjectProcessorOptions = {
     pool: string
     maxClaimCount: number
+    queue?: {
+        tags?: Record<string, string>,
+        objects: string[],
+    },
 } & ({} | {
     tag: string,
     maxObjectPerClaim?: number,

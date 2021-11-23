@@ -71,9 +71,9 @@ export class ObjectProcessorExplorer implements OnApplicationBootstrap, OnApplic
 
         let observable: Observable<Claim>;
         if ('tag' in options) {
-            observable = pool.$claimTagged(options.tag, options.maxClaimCount, options.maxObjectPerClaim)
+            observable = pool.$claimTagged(options)
         } else {
-            observable = pool.$claim(options.maxClaimCount)
+            observable = pool.$claim(options)
         }
 
         const parameters = getParameters(instance, key) ?? []
@@ -87,7 +87,7 @@ export class ObjectProcessorExplorer implements OnApplicationBootstrap, OnApplic
                     this.logger.error(err)
                 }
                 if (!isTerminalClaimState(claim.state)) {
-                    await claim.requeue()
+                    await claim.release()
                 }
             }
         )

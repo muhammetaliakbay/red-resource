@@ -46,9 +46,14 @@ export class ObjectPoolClient {
     readonly keyObjectQueue = `${this.pool}:queue` as const
     readonly keyQueuedObjects = `${this.pool}:queued` as const
     readonly keyClaimedObjects = `${this.pool}:claimed` as const
+    readonly keyDelayedObjectQueue = `${this.pool}:delayed-queue` as const
     private partialKeyObjectSession = `${this.pool}:session:` as const
     keyObjectSession(object: string): `${string}:session:${typeof object}` {
         return `${this.partialKeyObjectSession}${object}` as const
+    }
+    private partialKeyObjectDelay = `${this.pool}:delay:` as const
+    keyObjectDelay(object: string): `${string}:delay:${typeof object}` {
+        return `${this.partialKeyObjectDelay}${object}` as const
     }
     private partialKeyObjectTags = `${this.pool}:tags:` as const
     keyObjectTags(object: string): `${string}:tags:${typeof object}` {
@@ -63,7 +68,13 @@ export class ObjectPoolClient {
     }
     private tmpKeyNewObjects = `${this.pool}:new` as const
 
-    async queueTagged(tags: Record<string,string>, objects: string[]): Promise<string[]> {
+    async getAllObjects(): Promise<string[]> {
+        return this.redis.smembers(
+            this.keyAllObjects,
+        )
+    }
+
+    async queueTagged(tags: Record<string,string>, objects: string[], delaySeconds: number = 0): Promise<string[]> {
         if (objects.length === 0) {
             return []
         }
@@ -81,7 +92,7 @@ export class ObjectPoolClient {
                 local tmpKeyNewObjects = KEYS[1]
                 local keyAllObjects = KEYS[2]
                 local tagCount = tonumber(ARGV[1])
-                local tagParametersIndex = 3
+                local tagParametersIndex = 5
                 local objectsIndex = tagParametersIndex + (tagCount * 2)
                 redis.call('SADD', tmpKeyNewObjects, unpack(ARGV, objectsIndex))
                 local newObjects = redis.call('SDIFF', tmpKeyNewObjects, keyAllObjects)
@@ -91,17 +102,30 @@ export class ObjectPoolClient {
                     return {}
                 end
 
-                local keyObjectQueue = KEYS[3]
-                local keyQueuedObjects = KEYS[4]
                 redis.call('SADD', keyAllObjects, unpack(newObjects))
-                redis.call('SADD', keyQueuedObjects, unpack(newObjects))
-                redis.call('RPUSH', keyObjectQueue, unpack(newObjects))
+
+                local delaySeconds = tonumber(ARGV[3])
+                if delaySeconds > 0 then
+                    local keyDelayedObjectQueue = KEYS[5]
+                    local partialKeyObjectDelay = ARGV[4]
+                    redis.call('RPUSH', keyDelayedObjectQueue, unpack(newObjects))
+                    for i, newObject in ipairs(newObjects) do
+                        redis.call('SETEX', partialKeyObjectDelay..newObject, delaySeconds, '')
+                    end 
+                else
+                    local keyObjectQueue = KEYS[3]
+                    local keyQueuedObjects = KEYS[4]
+                    redis.call('SADD', keyQueuedObjects, unpack(newObjects))
+                    redis.call('RPUSH', keyObjectQueue, unpack(newObjects))
+                end
 
                 if tagCount > 0 then
-                    local keysTaggedQueueIndex = 5
-                    for i=0,(tagCount-1) do
-                        local keyTaggedQueue = KEYS[keysTaggedQueueIndex + i]
-                        redis.call('RPUSH', keyTaggedQueue, unpack(newObjects))
+                    if delaySeconds <= 0 then
+                        local keysTaggedQueueIndex = 6
+                        for i=0,(tagCount-1) do
+                            local keyTaggedQueue = KEYS[keysTaggedQueueIndex + i]
+                            redis.call('RPUSH', keyTaggedQueue, unpack(newObjects))
+                        end
                     end
 
                     local partialKeyObjectTags = ARGV[2]
@@ -113,16 +137,19 @@ export class ObjectPoolClient {
                 return newObjects
             `,
 
-            4 + keysTaggedQueue.length,
+            5 + keysTaggedQueue.length,
 
             this.tmpKeyNewObjects,
             this.keyAllObjects,
             this.keyObjectQueue,
             this.keyQueuedObjects,
+            this.keyDelayedObjectQueue,
             ...keysTaggedQueue,
 
             keysTaggedQueue.length,
             this.partialKeyObjectTags,
+            delaySeconds,
+            this.partialKeyObjectDelay,
             ...tagParameters,
             ...objects,
         )
@@ -328,14 +355,14 @@ export class ObjectPoolClient {
         return result === 1
     }
 
-    async requeue(object: string | string[], session: string): Promise<boolean> {
+    async requeue(object: string | string[], session: string, delaySeconds: number = 0): Promise<boolean> {
         const objects = Array.isArray(object) ? object : [object]
         const keysObjectSession = objects.map(
             object => this.keyObjectSession(object),
         )
         const result = await this.redis.eval(
             `
-                local keysObjectSessionIndex = 4
+                local keysObjectSessionIndex = 5
                 local session = ARGV[1]
                 local currentSessions = redis.call('MGET', unpack(KEYS, keysObjectSessionIndex))
                 for _, currentSession in ipairs(currentSessions) do
@@ -345,12 +372,23 @@ export class ObjectPoolClient {
                 end
 
                 redis.call('DEL', unpack(KEYS, keysObjectSessionIndex))
-                
-                local keyQueuedObjects = KEYS[1]
-                local keyObjectQueue = KEYS[2]
-                local objectsIndex = 4
-                redis.call('SADD', keyQueuedObjects, unpack(ARGV, objectsIndex))
-                redis.call('RPUSH', keyObjectQueue, unpack(ARGV, objectsIndex))
+
+                local objectsIndex = 6
+                local delaySeconds = tonumber(ARGV[4])
+                if delaySeconds > 0 then
+                    local keyDelayedObjectQueue = KEYS[4]
+                    local partialKeyObjectDelay = ARGV[5]
+                    redis.call('RPUSH', keyDelayedObjectQueue, unpack(ARGV, objectsIndex))
+                    for i=objectsIndex,#ARGV do
+                        local object = ARGV[i]
+                        redis.call('SETEX', partialKeyObjectDelay..object, delaySeconds, '')
+                    end 
+                else
+                    local keyQueuedObjects = KEYS[1]
+                    local keyObjectQueue = KEYS[2]
+                    redis.call('SADD', keyQueuedObjects, unpack(ARGV, objectsIndex))
+                    redis.call('RPUSH', keyObjectQueue, unpack(ARGV, objectsIndex))
+                end
 
                 local keyClaimedObjects = KEYS[3]
                 local partialKeyObjectTags = ARGV[2]
@@ -359,29 +397,34 @@ export class ObjectPoolClient {
                     local object = ARGV[i]
                     redis.call('LREM', keyClaimedObjects, 1, object)
 
-                    local tags_values = redis.call('HGETALL', partialKeyObjectTags..object)
-                    for i=1,#tags_values,2 do
-                        local tag = tags_values[i]
-                        local value = tags_values[i + 1]
-                        local pairTagValue = tag .. ':' .. value
-                        local keyTaggedQueue = partialKeyTaggedQueue .. pairTagValue
-                        redis.call('RPUSH', keyTaggedQueue, object)
+                    if delaySeconds <= 0 then
+                        local tags_values = redis.call('HGETALL', partialKeyObjectTags..object)
+                        for i=1,#tags_values,2 do
+                            local tag = tags_values[i]
+                            local value = tags_values[i + 1]
+                            local pairTagValue = tag .. ':' .. value
+                            local keyTaggedQueue = partialKeyTaggedQueue .. pairTagValue
+                            redis.call('RPUSH', keyTaggedQueue, object)
+                        end
                     end
                 end
 
                 return 1
             `,
 
-            3 + keysObjectSession.length,
+            4 + keysObjectSession.length,
 
             this.keyQueuedObjects,
             this.keyObjectQueue,
             this.keyClaimedObjects,
+            this.keyDelayedObjectQueue,
             ...keysObjectSession,
 
             session,
             this.partialKeyObjectTags,
             this.partialKeyTaggedQueue,
+            delaySeconds,
+            this.partialKeyObjectDelay,
             ...objects,
         )
         const isRequeued = result === 1
@@ -393,7 +436,7 @@ export class ObjectPoolClient {
         return isRequeued
     }
 
-    async clean(): Promise<string[]> {
+    async cleanExpired(): Promise<string[]> {
         const requeuedObjects: string[] = await this.redis.eval(
             `
                 local keyClaimedObjects = KEYS[1]
@@ -458,5 +501,85 @@ export class ObjectPoolClient {
         }
 
         return requeuedObjects
+    }
+
+    async cleanDelayed(): Promise<string[]> {
+        const queuedObjects: string[] = await this.redis.eval(
+            `
+                local keyDelayedObjectQueue = KEYS[1]
+                local delayedObjectCount = redis.call('LLEN', keyDelayedObjectQueue)
+
+                local partialKeyObjectDelay = ARGV[1]
+
+                local total = 0
+
+                for i=0,(delayedObjectCount - 1) do
+                    local object = redis.call('LINDEX', keyDelayedObjectQueue, i)
+                    local keyObjectDelay = partialKeyObjectDelay..object
+                    local objectDelayExists = redis.call('EXISTS', keyObjectDelay)
+                    
+                    if objectDelayExists == 1 then
+                        break
+                    end
+                    total = total + 1
+                end
+
+                if total == 0 then
+                    return {}
+                end
+                
+                local queuedObjects = redis.call('LPOP', keyDelayedObjectQueue, total)
+
+                local keyQueuedObjects = KEYS[2]
+                local keyObjectQueue = KEYS[3]
+                redis.call('SADD', keyQueuedObjects, unpack(queuedObjects))
+                redis.call('RPUSH', keyObjectQueue, unpack(queuedObjects))
+
+                local partialKeyObjectTags = ARGV[3]
+                local partialKeyTaggedQueue = ARGV[4]
+
+                for _, object in ipairs(queuedObjects) do
+                    local tags_values = redis.call('HGETALL', partialKeyObjectTags..object)
+                    for i=1,#tags_values,2 do
+                        local tag = tags_values[i]
+                        local value = tags_values[i + 1]
+                        local pairTagValue = tag .. ':' .. value
+                        local keyTaggedQueue = partialKeyTaggedQueue .. pairTagValue
+                        redis.call('RPUSH', keyTaggedQueue, object)
+                    end
+                end
+
+                return queuedObjects
+            `,
+
+            3,
+
+            this.keyDelayedObjectQueue,
+            this.keyQueuedObjects,
+            this.keyObjectQueue,
+
+            this.partialKeyObjectDelay,
+            this.partialKeyObjectTags,
+            this.partialKeyTaggedQueue,
+        )
+
+        if (queuedObjects.length > 0) {
+            await this.redis.publish(this.channelHasQueued, '')
+        }
+
+        return queuedObjects
+    }
+
+    async clean(): Promise<string[]> {
+        const requeuedObjects = await this.cleanExpired()
+        const queuedObjects = await this.cleanDelayed()
+        return [
+            ...new Set(
+                [
+                    ...requeuedObjects,
+                    ...queuedObjects,
+                ],
+            ),
+        ]
     }
 }

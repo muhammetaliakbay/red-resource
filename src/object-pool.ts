@@ -1,4 +1,4 @@
-import { BehaviorSubject, concat, concatMap, exhaustMap, filter, map, merge, observable, Observable, of, share, Subject, switchMap, tap, timer } from "rxjs";
+import { BehaviorSubject, concat, concatMap, exhaustMap, filter, interval, map, merge, observable, Observable, of, share, Subject, switchMap, tap, timer } from "rxjs";
 import { ObjectPoolClient } from "./object-pool-client";
 
 const claimTTLSeconds = 30
@@ -107,7 +107,7 @@ export class Claim {
         )
     }
 
-    requeue(): Promise<boolean> {
+    requeue(delaySeconds?: number): Promise<boolean> {
         return this.block(
             async () => {
                 if (this.state != ClaimState.Claimed) {
@@ -118,6 +118,7 @@ export class Claim {
                     () => this.pool.client.requeue(
                         this.objects,
                         this.session,
+                        delaySeconds,
                     )
                 )
                 if (result) {
@@ -163,6 +164,10 @@ export class ObjectPool {
     ) {
     }
 
+    getAllObjects(): Promise<string[]> {
+        return this.client.getAllObjects()
+    }
+
     queueTagged(tags: Record<string,string>, objects: string[]): Promise<string[]> {
         return this.client.queueTagged(tags, objects)
     }
@@ -174,7 +179,10 @@ export class ObjectPool {
     clean(): Promise<string[]> {
         return this.client.clean()
     }
-    readonly $clean: Observable<string[]> = timer(claimTTLSeconds * 1000).pipe(
+    readonly $clean: Observable<string[]> = concat(
+        of(-1),
+        interval((claimTTLSeconds / 3) * 1000),
+    ).pipe(
         exhaustMap(
             () => this.clean(),
         ),
@@ -222,7 +230,21 @@ export class ObjectPool {
         ),
     )
 
-    $claim(maxClaimedCount: number = 1): Observable<Claim> {
+    $claim({
+        maxClaimedCount = 1,
+        queue: {
+            objects,
+            tags = {},
+        } = {
+            objects: [],
+        },
+    } : {
+        maxClaimedCount?: number,
+        queue?: {
+            objects: string[],
+            tags?: Record<string, string>,
+        }
+    }): Observable<Claim> {
         let $feedbackSignal = new Subject<void>()
         let claimedCount = 0
         return merge(
@@ -236,7 +258,12 @@ export class ObjectPool {
                 maxCount => maxCount > 0,
             ),
             exhaustMap(
-                maxCount => this.claim(maxCount),
+                async maxCount => {
+                    if (objects.length > 0) {
+                        await this.queueTagged(tags, objects)
+                        return this.claim(maxCount)
+                    }
+                },
             ),
             concatMap(
                 newClaims => newClaims,
@@ -263,7 +290,25 @@ export class ObjectPool {
         )
     }
 
-    $claimTagged(tag: string, maxClaimedCount: number = 1, maxObjectPerClaim: number = 1): Observable<Claim> {
+    $claimTagged({
+        tag,
+        maxObjectPerClaim = 1,
+        maxClaimedCount = 1,
+        queue: {
+            objects,
+            tags = {},
+        } = {
+            objects: [],
+        },
+    } : {
+        tag: string,
+        maxObjectPerClaim?: number,
+        maxClaimedCount?: number,
+        queue?: {
+            objects: string[],
+            tags?: Record<string, string>,
+        }
+    }): Observable<Claim> {
         let $feedbackSignal = new Subject<void>()
         let claimedCount = 0
         return merge(
@@ -274,7 +319,12 @@ export class ObjectPool {
                 () => maxClaimedCount > claimedCount,
             ),
             exhaustMap(
-                () => this.claimTagged(tag, maxObjectPerClaim),
+                async () => {
+                    if (objects.length > 0) {
+                        await this.queueTagged(tags, objects)
+                        return this.claimTagged(tag, maxObjectPerClaim)
+                    }
+                },
             ),
             filter(
                 claim => claim != null
