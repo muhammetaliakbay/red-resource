@@ -1,6 +1,6 @@
 {
     "name": "red-resource",
-    "version": "0.1.0-dev5",
+    "version": "0.1.0-dev6",
     "types": "lib/index.d.ts",
     "main": "lib/index.js",
     "files": [
@@ -9,6 +9,7 @@
     "scripts": {
         "build": "rm -rf lib && tsc",
         "test": "mocha -r ts-node/register src/**/*.spec.ts",
+        "example": "ts-node example/main.ts",
         "prepack": "yarn build"
     },
     "dependencies": {
