@@ -7,7 +7,8 @@ import { Processor } from "./processor";
 @Module({
     imports: [
         ObjectPoolModule.register(
-            'test',
+            'test-1',
+            'test-2',
         ),
         ScheduleModule,
     ],

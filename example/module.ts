@@ -13,23 +13,9 @@ import { ScheduleModule } from "@nestjs/schedule";
         ScheduleModule.forRoot(),
     ],
 })
-export class DevModule implements OnModuleInit {
-    private readonly logger = new Logger('DevModule');
-
+export class DevModule {
     constructor(
         readonly poolRegistry: ObjectPoolRegistry,
     ) {
-    }
-
-    onModuleInit() {
-        this.poolRegistry.add(
-            new ObjectPool(
-                new ObjectPoolClient(
-                    new Redis(),
-                    "test",
-                )
-            )
-        )
-        this.logger.log('Registered test pool')
     }
 }

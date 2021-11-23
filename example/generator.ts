@@ -7,12 +7,12 @@ export class Generator {
     private readonly logger = new Logger('Processor');
 
     constructor(
-        @InjectObjectPool('test')
+        @InjectObjectPool('test-1')
         readonly pool: ObjectPool,
     ) {
     }
 
-    @Interval(1_000)
+    // @Interval(1_000)
     async generate() {
         const testTagValue = Math.floor(Math.random() * 5).toString()
         const object = `${new Date().toLocaleString()} - #${testTagValue}`
