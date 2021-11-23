@@ -224,7 +224,7 @@ export class ObjectPool {
             switchMap(
                 () => concat(
                     of(-1),
-                    timer(claimSignalPeriodMS),
+                    interval(claimSignalPeriodMS),
                 )
             )
         ),
