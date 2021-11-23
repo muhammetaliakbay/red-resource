@@ -1,4 +1,4 @@
-import { BehaviorSubject, concat, concatMap, exhaustMap, filter, interval, map, merge, observable, Observable, of, share, Subject, switchMap, tap, timer } from "rxjs";
+import { BehaviorSubject, concat, concatMap, exhaustMap, filter, interval, map, merge, Observable, of, share, Subject, switchMap, tap } from "rxjs";
 import { ObjectPoolClient } from "./object-pool-client";
 
 const claimTTLSeconds = 30
@@ -264,6 +264,9 @@ export class ObjectPool {
                         return this.claim(maxCount)
                     }
                 },
+            ),
+            filter(
+                newClaims => newClaims != null
             ),
             concatMap(
                 newClaims => newClaims,

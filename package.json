@@ -1,6 +1,6 @@
 {
     "name": "red-resource",
-    "version": "0.1.0-dev7",
+    "version": "0.1.0-dev8",
     "types": "lib/index.d.ts",
     "main": "lib/index.js",
     "files": [
