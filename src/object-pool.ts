@@ -261,8 +261,8 @@ export class ObjectPool {
                 async maxCount => {
                     if (objects.length > 0) {
                         await this.queueTagged(tags, objects)
-                        return this.claim(maxCount)
                     }
+                    return this.claim(maxCount)
                 },
             ),
             filter(
@@ -325,8 +325,8 @@ export class ObjectPool {
                 async () => {
                     if (objects.length > 0) {
                         await this.queueTagged(tags, objects)
-                        return this.claimTagged(tag, maxObjectPerClaim)
                     }
+                    return this.claimTagged(tag, maxObjectPerClaim)
                 },
             ),
             filter(

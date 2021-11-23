@@ -1,6 +1,6 @@
 {
     "name": "red-resource",
-    "version": "0.1.0-dev8",
+    "version": "0.1.0-dev9",
     "types": "lib/index.d.ts",
     "main": "lib/index.js",
     "files": [
@@ -10,7 +10,7 @@
         "build": "rm -rf lib && tsc",
         "test": "mocha -r ts-node/register src/**/*.spec.ts",
         "example": "ts-node example/main.ts",
-        "prepack": "yarn build"
+        "prepack": "yarn test && yarn build"
     },
     "dependencies": {
         "ioredis": "^4.28.0",
